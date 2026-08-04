@@ -3,3 +3,4 @@ torch
 nibabel
 numpy
 pyyaml
+wandb
