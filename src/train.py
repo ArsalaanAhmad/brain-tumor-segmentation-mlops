@@ -10,7 +10,7 @@ from monai.metrics import DiceMetric
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd,
     NormalizeIntensityd, RandSpatialCropd,
-    ToTensord, ConcatItemsd
+    ToTensord, ConcatItemsd, MapLabelValued
 )
 from monai.data import Dataset, DataLoader
 from monai.utils import set_determinism
@@ -25,12 +25,17 @@ def get_transforms():
     return Compose([
         LoadImaged(keys=["t1", "t1ce", "t2", "flair", "label"]),
         EnsureChannelFirstd(keys=["t1", "t1ce", "t2", "flair", "label"]),
+        # remap BraTS label 4 → 3 (labels are 0,1,2,4 — not 0,1,2,3)
+        MapLabelValued(
+            keys=["label"],
+            orig_labels=[0, 1, 2, 4],
+            target_labels=[0, 1, 2, 3]
+        ),
         NormalizeIntensityd(
             keys=["t1", "t1ce", "t2", "flair"],
             nonzero=True,
             channel_wise=True
         ),
-        # concatenate 4 modalities into single 4-channel tensor
         ConcatItemsd(keys=["t1", "t1ce", "t2", "flair"], name="image"),
         RandSpatialCropd(
             keys=["image", "label"],
@@ -39,7 +44,6 @@ def get_transforms():
         ),
         ToTensord(keys=["image", "label"]),
     ])
-
 
 def get_data_dicts(data_root):
     patients = sorted(glob.glob(os.path.join(data_root, "BraTS2021_*")))
