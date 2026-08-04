@@ -1,4 +1,4 @@
-data_root: /kaggle/input/brats2021  # update to match actual Kaggle dataset slug
+data_root: /kaggle/working/brats2021/BraTS2021_Training_Data # update to match actual Kaggle dataset slug
 output_dir: outputs/
 model:
   architecture: unet3d
