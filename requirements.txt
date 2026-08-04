@@ -4,3 +4,4 @@ nibabel
 numpy
 pyyaml
 wandb
+onnxscript

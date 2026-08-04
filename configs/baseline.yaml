@@ -8,3 +8,4 @@ training:
   epochs: 5
   batch_size: 1
   learning_rate: 0.0001
+  roi_size: [96, 96, 64]

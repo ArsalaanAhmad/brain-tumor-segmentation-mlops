@@ -14,6 +14,7 @@ from monai.transforms import (
 )
 from monai.data import Dataset, DataLoader
 from monai.utils import set_determinism
+from torch.cuda.amp import autocast, GradScaler
 
 
 def load_config(path):
@@ -25,7 +26,6 @@ def get_transforms():
     return Compose([
         LoadImaged(keys=["t1", "t1ce", "t2", "flair", "label"]),
         EnsureChannelFirstd(keys=["t1", "t1ce", "t2", "flair", "label"]),
-        # remap BraTS label 4 → 3 (labels are 0,1,2,4 — not 0,1,2,3)
         MapLabelValued(
             keys=["label"],
             orig_labels=[0, 1, 2, 4],
@@ -39,11 +39,12 @@ def get_transforms():
         ConcatItemsd(keys=["t1", "t1ce", "t2", "flair"], name="image"),
         RandSpatialCropd(
             keys=["image", "label"],
-            roi_size=(128, 128, 64),
+            roi_size=(96, 96, 64),  # reduced from 128x128 for speed
             random_size=False
         ),
         ToTensord(keys=["image", "label"]),
     ])
+
 
 def get_data_dicts(data_root):
     patients = sorted(glob.glob(os.path.join(data_root, "BraTS2021_*")))
@@ -82,8 +83,7 @@ def main():
     print(f"Using device: {device}")
 
     data_dicts = get_data_dicts(cfg["data_root"])
-    
-    # subset for fast iteration/testing
+
     if args.subset:
         data_dicts = data_dicts[:args.subset]
         print(f"Using subset of {args.subset} patients")
@@ -96,9 +96,16 @@ def main():
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg["training"]["batch_size"],
-        shuffle=True
+        shuffle=True,
+        num_workers=2,
+        pin_memory=True
     )
-    val_loader   = DataLoader(val_ds, batch_size=1)
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=1,
+        num_workers=2,
+        pin_memory=True
+    )
 
     model = UNet(
         spatial_dims=3,
@@ -109,12 +116,18 @@ def main():
         dropout=0.2,
     ).to(device)
 
+    # use both GPUs if available
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+
     loss_fn   = DiceLoss(to_onehot_y=True, softmax=True)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=cfg["training"]["learning_rate"]
     )
     metric = DiceMetric(include_background=False, reduction="mean")
+    scaler = GradScaler()  # mixed precision scaler
 
     for epoch in range(cfg["training"]["epochs"]):
         model.train()
@@ -123,12 +136,17 @@ def main():
             imgs = batch["image"].to(device)
             segs = batch["label"].to(device)
             optimizer.zero_grad()
-            outputs = model(imgs)
-            loss = loss_fn(outputs, segs)
-            loss.backward()
-            optimizer.step()
+
+            # mixed precision forward pass
+            with autocast():
+                outputs = model(imgs)
+                loss = loss_fn(outputs, segs)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
             epoch_loss += loss.item()
-            # print every batch so you can see live progress
             print(f"Epoch {epoch+1} | Batch {i+1}/{len(train_loader)} | Loss: {loss.item():.4f}")
 
         avg_loss = epoch_loss / len(train_loader)
@@ -138,7 +156,8 @@ def main():
             for val_batch in val_loader:
                 val_imgs = val_batch["image"].to(device)
                 val_segs = val_batch["label"].to(device)
-                val_out  = model(val_imgs)
+                with autocast():
+                    val_out = model(val_imgs)
                 metric(y_pred=val_out, y=val_segs)
         dice_score = metric.aggregate().item()
         metric.reset()
@@ -155,7 +174,7 @@ def main():
     torch.save(model.state_dict(), ckpt_path)
     print(f"Model saved to {ckpt_path}")
 
-    dummy     = torch.randn(1, 4, 128, 128, 64).to(device)
+    dummy     = torch.randn(1, 4, 96, 96, 64).to(device)
     onnx_path = os.path.join(cfg["output_dir"], "model.onnx")
     torch.onnx.export(
         model, dummy, onnx_path,
