@@ -1,0 +1,5 @@
+monai[all]
+torch
+nibabel
+numpy
+pyyaml
