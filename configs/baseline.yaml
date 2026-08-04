@@ -5,7 +5,7 @@ model:
   in_channels: 4
   out_channels: 4
 training:
-  epochs: 5
+  epochs: 20
   batch_size: 1
-  learning_rate: 0.0001
+  learning_rate: 0.001
   roi_size: [96, 96, 64]
