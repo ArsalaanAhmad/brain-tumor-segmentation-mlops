@@ -67,6 +67,8 @@ def get_data_dicts(data_root):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/baseline.yaml")
+    parser.add_argument("--subset", type=int, default=None,
+                        help="Use only N patients for quick testing")
     args = parser.parse_args()
     cfg = load_config(args.config)
 
@@ -80,7 +82,13 @@ def main():
     print(f"Using device: {device}")
 
     data_dicts = get_data_dicts(cfg["data_root"])
-    print(f"Found {len(data_dicts)} patients")
+    
+    # subset for fast iteration/testing
+    if args.subset:
+        data_dicts = data_dicts[:args.subset]
+        print(f"Using subset of {args.subset} patients")
+    else:
+        print(f"Using full dataset: {len(data_dicts)} patients")
 
     split        = int(0.8 * len(data_dicts))
     train_ds     = Dataset(data=data_dicts[:split], transform=get_transforms())
@@ -106,13 +114,12 @@ def main():
         model.parameters(),
         lr=cfg["training"]["learning_rate"]
     )
-    metric    = DiceMetric(include_background=False, reduction="mean")
+    metric = DiceMetric(include_background=False, reduction="mean")
 
     for epoch in range(cfg["training"]["epochs"]):
-        # training
         model.train()
         epoch_loss = 0
-        for batch in train_loader:
+        for i, batch in enumerate(train_loader):
             imgs = batch["image"].to(device)
             segs = batch["label"].to(device)
             optimizer.zero_grad()
@@ -121,10 +128,11 @@ def main():
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
+            # print every batch so you can see live progress
+            print(f"Epoch {epoch+1} | Batch {i+1}/{len(train_loader)} | Loss: {loss.item():.4f}")
 
         avg_loss = epoch_loss / len(train_loader)
 
-        # validation
         model.eval()
         with torch.no_grad():
             for val_batch in val_loader:
@@ -135,21 +143,19 @@ def main():
         dice_score = metric.aggregate().item()
         metric.reset()
 
-        print(f"Epoch {epoch+1} | Loss: {avg_loss:.4f} | Dice: {dice_score:.4f}")
+        print(f"✅ Epoch {epoch+1} COMPLETE | Loss: {avg_loss:.4f} | Dice: {dice_score:.4f}")
         wandb.log({
             "epoch": epoch + 1,
             "train_loss": avg_loss,
             "val_dice": dice_score,
         })
 
-    # save checkpoint
     os.makedirs(cfg["output_dir"], exist_ok=True)
     ckpt_path = os.path.join(cfg["output_dir"], "model.pth")
     torch.save(model.state_dict(), ckpt_path)
     print(f"Model saved to {ckpt_path}")
 
-    # ONNX export
-    dummy  = torch.randn(1, 4, 128, 128, 64).to(device)
+    dummy     = torch.randn(1, 4, 128, 128, 64).to(device)
     onnx_path = os.path.join(cfg["output_dir"], "model.onnx")
     torch.onnx.export(
         model, dummy, onnx_path,
